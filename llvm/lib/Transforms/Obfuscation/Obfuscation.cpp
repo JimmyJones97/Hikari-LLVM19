@@ -11,6 +11,7 @@
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/PassPlugin.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/IR/Verifier.h"
 #include <cstdlib>
 
 using namespace llvm;
@@ -193,15 +194,36 @@ struct Obfuscation : public ModulePass {
 #else
           F.getName().startswith("hikari_")) {
 #endif
-        for (User *U : F.users())
-          if (Instruction *Inst = dyn_cast<Instruction>(U))
+        // Collect all instruction users first (safe: don't mutate use-lists
+        // while iterating)
+        SmallVector<Instruction *, 8> InstrsToErase;
+        InstrsToErase.clear();
+
+        for (User *U : F.users()) {
+          if (Instruction *Inst = dyn_cast<Instruction>(U)) {
+            InstrsToErase.push_back(Inst);
+          }
+        }
+
+        // Now erase them safely (erasing updates use-lists)
+        for (Instruction *Inst : InstrsToErase) {
+          if (Inst) // extra safety guard
             Inst->eraseFromParent();
+        }
+
+        // Mark function for deletion after we finish iterating functions
         toDelete.emplace_back(&F);
       }
+
     for (Function *F : toDelete)
       F->eraseFromParent();
 
+    if (verifyModule(M, &errs())) {
+      errs() << "Hikari: Module verification failed after obfuscation!\n";
+    }
+
     timer->stopTimer();
+
     errs() << "Hikari Out\n";
     errs() << "Spend Time: "
            << format("%.7f", timer->getTotalTime().getWallTime()) << "s"
